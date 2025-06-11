@@ -1,10 +1,9 @@
 use anyhow::Result;
 use qdrant_client::qdrant::{
     CreateCollectionBuilder, Distance, PointStruct, SearchPoints, VectorParamsBuilder,
-    WithPayloadSelector, with_payload_selector::SelectorOptions
+    WithPayloadSelector, with_payload_selector::SelectorOptions, Value, UpsertPoints
 };
 use qdrant_client::Qdrant;
-use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use walkdir::WalkDir;
@@ -43,7 +42,7 @@ impl VectorStore {
                 self.client
                     .create_collection(
                         CreateCollectionBuilder::new(&self.collection_name)
-                            .vectors_config(VectorParamsBuilder::new(384, Distance::Cosine)), // Adjust vector size based on your embedding model
+                            .vectors_config(VectorParamsBuilder::new(384, Distance::Cosine)),
                     )
                     .await?;
             }
@@ -58,20 +57,24 @@ impl VectorStore {
         embedding: Vec<f32>,
     ) -> Result<()> {
         let payload: HashMap<String, Value> = [
-            ("file_path".to_string(), json!(file_path)),
-            ("content".to_string(), json!(content)),
-            ("file_name".to_string(), json!(Path::new(file_path).file_name().unwrap().to_string_lossy())),
-            ("file_extension".to_string(), json!(Path::new(file_path).extension().unwrap_or_default().to_string_lossy())),
+            ("file_path".to_string(), file_path.into()),
+            ("content".to_string(), content.into()),
+            ("file_name".to_string(), Path::new(file_path).file_name().unwrap().to_string_lossy().to_string().into()),
+            ("file_extension".to_string(), Path::new(file_path).extension().unwrap_or_default().to_string_lossy().to_string().into()),
         ].into_iter().collect();
         
         let point = PointStruct::new(
-            uuid::Uuid::new_v4().to_string(), // Generate unique ID
+            uuid::Uuid::new_v4().to_string(),
             embedding,
             payload,
         );
         
         self.client
-            .upsert_points_blocking(&self.collection_name, vec![point])
+            .upsert_points(UpsertPoints {
+                collection_name: self.collection_name.clone(),
+                points: vec![point],
+                ..Default::default()
+            })
             .await?;
             
         Ok(())
@@ -87,11 +90,11 @@ impl VectorStore {
             vector: query_embedding,
             limit,
             with_payload: Some(payload_selector),
-            score_threshold: Some(0.7), // Adjust threshold as needed
+            score_threshold: Some(0.7),
             ..Default::default()
         };
         
-        let search_result = self.client.search_points(&search_points).await?;
+        let search_result = self.client.search_points(search_points).await?;
         
         let results: Vec<SearchResult> = search_result
             .result
@@ -99,12 +102,10 @@ impl VectorStore {
             .map(|point| SearchResult {
                 file_path: point.payload.get("file_path")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string(),
+                    .map_or("unknown".to_string(), |v| v.to_string()),
                 content: point.payload.get("content")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                    .map_or("".to_string(), |v| v.to_string()),
                 score: point.score,
             })
             .collect();

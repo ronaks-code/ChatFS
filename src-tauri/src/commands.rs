@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::Path;
 use tauri::command;
+use crate::vector_store::{VectorStore, index_directory};
+use crate::embedding::{EmbeddingService, SearchResult};
 
 #[command]
 pub fn list_files(path: String) -> Result<Vec<String>, String> {
@@ -48,9 +50,7 @@ pub fn write_file_content(path: String, content: String) -> Result<(), String> {
         Ok(_) => Ok(()),
         Err(e) => Err(format!("Failed to write file {}: {}", path, e))
     }
-} 
-
-use crate::vector_store::{VectorStore, index_directory};
+}
 
 #[command]
 pub async fn index_directory_command(directory_path: String) -> Result<String, String> {
@@ -58,11 +58,13 @@ pub async fn index_directory_command(directory_path: String) -> Result<String, S
         .await
         .map_err(|e| format!("Failed to initialize vector store: {}", e))?;
     
-    // You'll need to implement or integrate an embedding function here
+    let embedding_service = EmbeddingService::new();
+    
     let embedding_fn = |content: &str| -> anyhow::Result<Vec<f32>> {
-        // This is a placeholder - you'll need to integrate with an embedding model
-        // For example, you could use a local model or call an API
-        todo!("Implement embedding generation - consider using sentence-transformers, OpenAI API, or a local model")
+        // Use the embedding service
+        tokio::runtime::Handle::current().block_on(async {
+            embedding_service.get_embedding(content).await
+        })
     };
     
     index_directory(&vector_store, &directory_path, embedding_fn)
@@ -73,15 +75,44 @@ pub async fn index_directory_command(directory_path: String) -> Result<String, S
 }
 
 #[command]
-pub async fn search_files_command(query: String) -> Result<Vec<crate::vector_store::SearchResult>, String> {
+pub async fn search_files_command(query: String, top_k: Option<usize>) -> Result<Vec<SearchResult>, String> {
     let vector_store = VectorStore::new("file_index")
         .await
         .map_err(|e| format!("Failed to initialize vector store: {}", e))?;
     
-    // Generate embedding for the query (you'll need to implement this)
-    let query_embedding = todo!("Generate embedding for query");
+    let embedding_service = EmbeddingService::new();
     
-    vector_store.search_similar_files(query_embedding, 10)
+    // Generate embedding for the query
+    let query_embedding = embedding_service
+        .get_embedding(&query)
         .await
-        .map_err(|e| format!("Search failed: {}", e))
+        .map_err(|e| format!("Failed to generate embedding: {}", e))?;
+    
+    let limit = top_k.unwrap_or(10) as u64;
+    let search_results = vector_store
+        .search_similar_files(query_embedding, limit)
+        .await
+        .map_err(|e| format!("Search failed: {}", e))?;
+    
+    // Convert to frontend format
+    let results = search_results
+        .into_iter()
+        .map(|result| SearchResult {
+            path: result.file_path,
+            snippet: truncate_content(&result.content, 100),
+            score: result.score,
+        })
+        .collect();
+    
+    Ok(results)
 }
+
+fn truncate_content(content: &str, max_length: usize) -> String {
+    if content.len() <= max_length {
+        content.to_string()
+    } else {
+        let truncated = &content[..max_length];
+        format!("{}...", truncated)
+    }
+}
+ 

@@ -42,21 +42,10 @@
   },
   "plugins": {
     "fs": {
-      "scope": {
-        "allow": ["**"],
-        "deny": []
-      }
+      "requireLiteralLeadingDot": false
     },
     "shell": {
-      "scope": {
-        "allow": [
-          {
-            "name": "open",
-            "cmd": "open",
-            "args": true
-          }
-        ]
-      }
+      "open": true
     }
   }
 }
